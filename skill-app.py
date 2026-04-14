@@ -5,7 +5,7 @@ from dateutil.relativedelta import relativedelta
 from io import BytesIO
 
 st.set_page_config(page_title="Pipeline Cleaner", layout="centered")
-st.title("🧹 Pipeline Cleaner")
+st.title("🧹 Smartsheets Pipeline Cleaner")
 st.caption("Upload SA + UK Smartsheet exports → get one clean combined file")
 
 # ── Constants ────────────────────────────────────────────────────────────────
