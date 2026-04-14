@@ -12,32 +12,31 @@ st.caption("Upload SA + UK Smartsheet exports → get one clean combined file")
 EXCLUDE_REPS   = ['mariska', 'dylan', 'chris', 'justin']
 EXCLUDE_STAGES = ['8 - on hold']
 
+MONTHS = ['january','february','march','april','may','june',
+          'july','august','september','october','november','december']
+MONTH_ABBR = {m[:3]: m for m in MONTHS}
+
 def get_invoice_window():
     now = datetime.today().replace(day=1)
-    return [(now + relativedelta(months=i)).strftime('%Y-%m') for i in range(-1, 7)]
-
-MONTH_MAP = {
-    'jan':'01','feb':'02','mar':'03','apr':'04','may':'05','jun':'06',
-    'jul':'07','aug':'08','sep':'09','oct':'10','nov':'11','dec':'12',
-    'january':'01','february':'02','march':'03','april':'04','june':'06',
-    'july':'07','august':'08','september':'09','october':'10','november':'11','december':'12'
-}
+    return [(now + relativedelta(months=i)).strftime('%B').lower() for i in range(-1, 7)]
 
 def parse_invoice_month(raw):
     import re
-    if not raw or pd.isna(raw): return None
-    raw = str(raw).strip()
-    m = re.match(r'^([A-Za-z]+)[-\s](\d{2,4})
-, raw)
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)): return None
+    s = str(raw).strip().lower()
+    if not s: return None
+    m = re.match(r'^(\d{4})-(\d{1,2})', s)
     if m:
-        mo = MONTH_MAP.get(m.group(1).lower())
-        yr = '20' + m.group(2) if len(m.group(2)) == 2 else m.group(2)
-        if mo: return f'{yr}-{mo}'
-    if re.match(r'^\d{4}-\d{2}
-, raw): return raw
-    m2 = re.match(r'^(\d{1,2})/(\d{4})
-, raw)
-    if m2: return f'{m2.group(2)}-{m2.group(1).zfill(2)}'
+        i = int(m.group(2))
+        if 1 <= i <= 12: return MONTHS[i-1]
+    m = re.match(r'^(\d{1,2})/(\d{4})', s)
+    if m:
+        i = int(m.group(1))
+        if 1 <= i <= 12: return MONTHS[i-1]
+    for full in MONTHS:
+        if full in s: return full
+    for abbr, full in MONTH_ABBR.items():
+        if re.search(r'\b' + abbr + r'\b', s): return full
     return None
 
 def parse_money(val):
@@ -45,15 +44,22 @@ def parse_money(val):
     try: return float(str(val).replace('R','').replace(',','').replace(' ','').strip())
     except: return 0.0
 
+def parse_prob(val):
+    if pd.isna(val): return 0.0
+    s = str(val).replace('%','').replace(' ','').strip()
+    try: v = float(s)
+    except: return 0.0
+    return v/100 if v > 1 else v
+
 def load_sa(df):
-    out = pd.DataFrame()
+    out = pd.DataFrame(index=df.index)
     out['Region']            = 'SA'
     out['Company Name']      = df.get('Company Name', '')
     out['Sales Stage']       = df.get('Sales Stage', '').str.strip()
     out['Invoice Month']     = df.get('1st Invoice Month', '').apply(parse_invoice_month)
     out['Recurring']         = df.get('Deal Size - Monthly Recurring', 0).apply(parse_money)
     out['Once Off']          = df.get('Deal Size - Once Off', 0).apply(parse_money)
-    out['Win Probability']   = df.get('Win Probability', 0).apply(parse_money)
+    out['Win Probability']   = df.get('Win Probability', 0).apply(parse_prob)
     out['Weighted Recurring']= df.get('Weighted Deal - Monthly Recurring', 0).apply(parse_money)
     out['Weighted Once Off'] = df.get('Weighted Deal - Once off', 0).apply(parse_money)
     out['Sales Rep']         = df.get('Sales Rep', '').str.strip()
@@ -64,17 +70,30 @@ def load_sa(df):
     out['Notes']             = df.get('Notes', '')
     out['Expected Close Date']= df.get('Expected Close Date', '')
     out['Created']           = df.get('Created', '')
+    consumed = {'Company Name','Sales Stage','1st Invoice Month',
+        'Deal Size - Monthly Recurring','Deal Size - Once Off','Win Probability',
+        'Weighted Deal - Monthly Recurring','Weighted Deal - Once off',
+        'Sales Rep','Lead Source','Service Category','Product Tags',
+        'Duration (Temp)','Notes','Expected Close Date','Created'}
+    for col in df.columns:
+        if col not in consumed and col not in out.columns:
+            out[col] = df[col]
     return out
 
 def load_uk(df):
-    out = pd.DataFrame()
+    ecd = pd.to_datetime(df.get('Expected Close Date'), errors='coerce')
+    today = pd.Timestamp(datetime.today().date())
+    keep = ecd.notna() & (ecd >= today)
+    df = df[keep].copy()
+    ecd = ecd[keep]
+    out = pd.DataFrame(index=df.index)
     out['Region']            = 'UK'
     out['Company Name']      = df.get('Company Name', '')
     out['Sales Stage']       = df.get('Sales Stage', '').str.strip()
-    out['Invoice Month']     = df.get('Invoice Month', '').apply(parse_invoice_month)
+    out['Invoice Month']     = ecd.dt.strftime('%B').str.lower()
     out['Recurring']         = df.get('Deal Size - Monthly Recurring', 0).apply(parse_money)
     out['Once Off']          = df.get('Deal Size - Once Off', 0).apply(parse_money)
-    out['Win Probability']   = df.get('Won Probability', 0).apply(parse_money)
+    out['Win Probability']   = df.get('Won Probability', 0).apply(parse_prob)
     out['Weighted Recurring']= df.get('Weighted Deal - Monthly Recurring', 0).apply(parse_money)
     out['Weighted Once Off'] = df.get('Weighted Deal - Once off', 0).apply(parse_money)
     out['Sales Rep']         = df.get('Sales Rep', '').str.strip()
@@ -85,12 +104,20 @@ def load_uk(df):
     out['Notes']             = df.get('Notes', '')
     out['Expected Close Date']= df.get('Expected Close Date', '')
     out['Created']           = df.get('Created', '')
+    consumed = {'Company Name','Sales Stage','Invoice Month',
+        'Deal Size - Monthly Recurring','Deal Size - Once Off','Won Probability',
+        'Weighted Deal - Monthly Recurring','Weighted Deal - Once off',
+        'Sales Rep','Lead Source','Service Categoery','Service Category',
+        'Core Product','Notes','Expected Close Date','Created'}
+    for col in df.columns:
+        if col not in consumed and col not in out.columns:
+            out[col] = df[col]
     return out
 
 def apply_filters(df, window):
-    df = df[~df['Sales Stage'].str.lower().isin(EXCLUDE_STAGES)]
-    df = df[~df['Sales Rep'].str.lower().str.split().str[0].isin(EXCLUDE_REPS)]
-    df = df[df['Invoice Month'].isin(window) | df['Invoice Month'].isna()]
+    df = df[~df['Sales Stage'].fillna('').str.lower().isin(EXCLUDE_STAGES)]
+    df = df[~df['Sales Rep'].fillna('').str.lower().str.split().str[0].isin(EXCLUDE_REPS)]
+    df = df[df['Invoice Month'].isin(window)]
     return df
 
 # ── UI ───────────────────────────────────────────────────────────────────────
