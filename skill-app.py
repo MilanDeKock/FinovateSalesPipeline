@@ -4,7 +4,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from io import BytesIO
 
-st.set_page_config(page_title="Pipeline Cleaner", layout="centered")
+st.set_page_config(page_title="Smartsheets Pipeline Cleaner", layout="centered")
 st.title("🧹 Smartsheets Pipeline Cleaner")
 st.caption("Upload SA + UK Smartsheet exports → get one clean combined file")
 
@@ -80,10 +80,13 @@ def load_sa(df):
             out[col] = df[col]
     return out
 
-def load_uk(df):
+def load_uk(df, drop_past=True):
     ecd = pd.to_datetime(df.get('Expected Close Date'), errors='coerce')
-    today = pd.Timestamp(datetime.today().date())
-    keep = ecd.notna() & (ecd >= today)
+    if drop_past:
+        today = pd.Timestamp(datetime.today().date())
+        keep = ecd.notna() & (ecd >= today)
+    else:
+        keep = ecd.notna()
     df = df[keep].copy()
     ecd = ecd[keep]
     out = pd.DataFrame(index=df.index)
@@ -114,30 +117,73 @@ def load_uk(df):
             out[col] = df[col]
     return out
 
-def apply_filters(df, window):
-    df = df[~df['Sales Stage'].fillna('').str.lower().isin(EXCLUDE_STAGES)]
-    df = df[~df['Sales Rep'].fillna('').str.lower().str.split().str[0].isin(EXCLUDE_REPS)]
+def apply_filters(df, window, excl_reps, excl_stages):
+    df = df[~df['Sales Stage'].fillna('').isin(excl_stages)]
+    df = df[~df['Sales Rep'].fillna('').isin(excl_reps)]
     df = df[df['Invoice Month'].isin(window)]
     return df
 
-# ── UI ───────────────────────────────────────────────────────────────────────
-col1, col2 = st.columns(2)
-sa_file = col1.file_uploader("SA Pipeline (xlsx)", type=['xlsx','xls'])
-uk_file = col2.file_uploader("UK Pipeline (xlsx)", type=['xlsx','xls'])
+def build_window(start_name, end_name):
+    s = MONTHS.index(start_name.lower())
+    e = MONTHS.index(end_name.lower())
+    if s <= e:
+        return MONTHS[s:e+1]
+    return MONTHS[s:] + MONTHS[:e+1]
 
-window = get_invoice_window()
-st.info(f"📅 Invoice window: **{window[0]} → {window[-1]}** (current month -1 to +6)")
+# ── UI ───────────────────────────────────────────────────────────────────────
+MONTHS_TITLE = [m.title() for m in MONTHS]
+default_win = get_invoice_window()
+default_from_title = default_win[0].title()
+default_to_title   = default_win[-1].title()
+
+if st.button("🔄 Reset filters to defaults"):
+    for k in ['f_from','f_to','f_reps','f_stages','f_drop_past_uk']:
+        st.session_state.pop(k, None)
+    st.rerun()
+
+st.subheader("Filters")
+filter_slot = st.container()
+
+with filter_slot:
+    mc1, mc2, mc3 = st.columns([1,1,1])
+    from_month = mc1.selectbox("Invoice month from", MONTHS_TITLE,
+        index=MONTHS_TITLE.index(default_from_title), key='f_from')
+    to_month = mc2.selectbox("Invoice month to", MONTHS_TITLE,
+        index=MONTHS_TITLE.index(default_to_title), key='f_to')
+    drop_past_uk = mc3.checkbox("Drop UK past-dated deals", value=True, key='f_drop_past_uk')
+
+reps_stages_slot = st.container()
+
+st.markdown("---")
+st.subheader("Upload files")
+col1, col2 = st.columns(2)
+sa_file = col1.file_uploader("SA Pipeline (xlsx)", type=['xlsx','xls'], key='sa_upload')
+uk_file = col2.file_uploader("UK Pipeline (xlsx)", type=['xlsx','xls'], key='uk_upload')
 
 if not sa_file or not uk_file:
+    with reps_stages_slot:
+        st.info("Upload both files to configure rep/stage filters")
     st.stop()
 
 sa_raw = pd.read_excel(sa_file)
 uk_raw = pd.read_excel(uk_file)
 
 sa = load_sa(sa_raw)
-uk = load_uk(uk_raw)
+uk = load_uk(uk_raw, drop_past=drop_past_uk)
 combined = pd.concat([sa, uk], ignore_index=True)
-cleaned  = apply_filters(combined, window)
+
+all_reps   = sorted({r.strip() for r in combined['Sales Rep'].dropna().astype(str) if r.strip()})
+all_stages = sorted({s for s in combined['Sales Stage'].dropna().astype(str) if s})
+default_reps   = [r for r in all_reps if r.lower().split()[0] in EXCLUDE_REPS]
+default_stages = [s for s in all_stages if s.lower() in EXCLUDE_STAGES]
+
+with reps_stages_slot:
+    rc1, rc2 = st.columns(2)
+    excl_reps   = rc1.multiselect("Exclude reps", all_reps, default=default_reps, key='f_reps')
+    excl_stages = rc2.multiselect("Exclude stages", all_stages, default=default_stages, key='f_stages')
+
+window  = build_window(from_month, to_month)
+cleaned = apply_filters(combined, window, excl_reps, excl_stages)
 
 # ── Preview ──────────────────────────────────────────────────────────────────
 st.markdown("---")
